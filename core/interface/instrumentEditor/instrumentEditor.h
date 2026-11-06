@@ -22,6 +22,9 @@ enum mtInstrumentEditorMode
     mtInstEditModeSynth,
     mtInstEditModeSynthMacros,
     mtInstEditModeSynthPatchEdit,
+#ifdef PLATFORM_IMX
+    mtInstEditModeBusRouting,
+#endif
 #endif
     mtInstEditModeCount,
 };
@@ -459,6 +462,28 @@ class cInstrumentEditor : public ModuleBase
     void showSynthReverbSend(uint8_t syntPartIdx);
     void showSynthDelaySend(uint8_t syntPartIdx);
     void showSynthMacroValue(uint8_t syntPartIdx, uint8_t macroIdx);
+
+#ifdef PLATFORM_IMX
+    // Bus (per synth slot)
+    int busRoutingTrackPos = 0;
+
+    void changeBusParamValue(int value, ValueChangeSource source = kArrowButton);
+    void changeBusThreshold(int16_t value);
+    void changeBusAttack(int16_t value);
+    void changeBusRelease(int16_t value);
+    void changeBusSidechain(int16_t value);
+
+    void showBusThreshold(uint8_t bus);
+    void showBusAttack(uint8_t bus);
+    void showBusRelease(uint8_t bus);
+    void showBusSidechain(uint8_t bus);
+    void showBusRoutingEntry(uint8_t bus);
+
+    void showBusRoutingScreen();
+    void setBusRoutingScreenFunct();
+    void changeBusRoutingTrack(int16_t value);
+    void changeBusRoutingDest(int16_t value);
+#endif
 
     //----------------------------------
     // patch editor

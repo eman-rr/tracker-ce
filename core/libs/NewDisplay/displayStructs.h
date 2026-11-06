@@ -81,6 +81,8 @@ enum enDisplayBitmaps
     kBitmapMiniCHIP,
     kBitmapCHIP,
 
+    kBitmapMiniBus,
+
 #endif
 
     displayBitmapsCount,

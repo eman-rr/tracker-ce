@@ -368,6 +368,9 @@ void cInstrumentEditor::showTitleBar()
 #if GUI_HANDLE_SYNTH
         case mtInstEditModeSynth: label = "Synth Parameters 1/2"; break;
         case mtInstEditModeSynthMacros: label = "Synth Macros 2/2"; break;
+#ifdef PLATFORM_IMX
+        case mtInstEditModeBusRouting: label = "Track Routing"; break;
+#endif
         case mtInstEditModeSynthPatchEdit:
         {
             int syntPartIdx = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
@@ -1806,7 +1809,15 @@ void cInstrumentEditor::refreshFramePosition()
         }
         case mtInstEditModeSynth:
         {
+#ifdef PLATFORM_IMX
+            int synthIdx = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
+            // A bus slot has a 7th param (Sidechain) instead of Polyphony.
+            bool isBus = (synthIdx >= 0 && synthIdx < kSynthInstrumentsCount) &&
+                         mtProject.values.busSettings[synthIdx].isBus;
+            frameData.placesCount = isBus ? 7 : 6;
+#else
             frameData.placesCount = 6;
+#endif
             frameData.startPlace = 0;
             frameData.places[0] = &framesPlaces[0][0];
             frameData.places[1] = &framesPlaces[1][0];
@@ -1814,6 +1825,7 @@ void cInstrumentEditor::refreshFramePosition()
             frameData.places[3] = &framesPlaces[3][0];
             frameData.places[4] = &framesPlaces[4][0];
             frameData.places[5] = &framesPlaces[5][0];
+            frameData.places[6] = &framesPlaces[6][0];
             break;
         }
         case mtInstEditModeSynthPatchEdit:
@@ -1824,6 +1836,19 @@ void cInstrumentEditor::refreshFramePosition()
             frameData.places[1] = &framesPlacesSynthEdit[0][0];
             break;
         }
+#ifdef PLATFORM_IMX
+        case mtInstEditModeBusRouting:
+        {
+            // 7 places so the Sidechain param (label 6) is arrow-reachable from the params screen.
+            frameData.placesCount = 7;
+            frameData.startPlace = 0;
+            for (int i = 0; i < 7; i++)
+            {
+                frameData.places[i] = &framesPlaces[i][0];
+            }
+            break;
+        }
+#endif
 #endif
         default: break;
     }

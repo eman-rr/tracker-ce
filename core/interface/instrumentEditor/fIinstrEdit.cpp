@@ -254,6 +254,14 @@ void cInstrumentEditor::start(uint32_t options)
             setSynthPatchEditorScreenFunct();
             break;
         }
+#ifdef PLATFORM_IMX
+        case mtInstEditModeBusRouting:
+        {
+            showBusRoutingScreen();
+            setBusRoutingScreenFunct();
+            break;
+        }
+#endif
 #endif
         default:
         {

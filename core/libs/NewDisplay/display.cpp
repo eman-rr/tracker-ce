@@ -75,6 +75,7 @@
 #include "images/synth_shaper_18x18_L4.h"
 #include "images/chip_med_108x40_L2.h"
 #include "images/chip_mini_nomark_80x28_L2.h"
+#include "images/bus_mini_80x29_L2.h"
 
 #endif
 
@@ -209,6 +210,7 @@ const strBitmap bitmaps[displayBitmapsCount] = {
     { synth_shaper_18x18_L4, 126900, 162, 18, 18, L4, 9 },
     { chip_mini_nomark_80x28_L2, 127100, 560, 80, 28, L2, 20 },
     { chip_med_108x40_L2, 127700, 1080, 108, 40, L2, 27 },
+    { bus_mini_80x29_L2, 128300, 580, 80, 29, L2, 20 },
 
 #endif
 };

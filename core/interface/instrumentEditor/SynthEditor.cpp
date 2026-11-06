@@ -11,6 +11,8 @@
 #include "mtAudioEngine.h"
 #include "util_math.h"
 #include "util_string.h"
+#include "ampLogarythmicValues.h"
+#include <math.h>
 
 extern uint8_t externalRamScratchBuff[];
 static_assert(kMaxFilesListLength * (kMaxFileNameLen + 1) + kMaxFilesListLength * sizeof(char**) <=
@@ -25,18 +27,44 @@ const char* const synthModelNames[Synth::kSynthTypes.size()] = {
     "ACD", "FAT", "VAP", "WTFM", "PERC", "DIRT", "CHIP",
 };
 
+// On IMX the model list appends a "BUS" row (a sample-track bus hosted in this slot) after the
+// synth types, so it has one extra entry.
+#ifdef PLATFORM_IMX
+static const int synthModelListImages[Synth::kSynthTypes.size() + 1] = {
+    enDisplayBitmaps::kBitmapMiniACD,  enDisplayBitmaps::kBitmapMiniFAT,
+    enDisplayBitmaps::kBitmapMiniVAP,  enDisplayBitmaps::kBitmapMiniWTFM,
+    enDisplayBitmaps::kBitmapMiniPERC, enDisplayBitmaps::kBitmapMiniDIRT,
+    enDisplayBitmaps::kBitmapMiniCHIP, enDisplayBitmaps::kBitmapMiniBus
+};
+static constexpr uint8_t kSynthModelListLength = Synth::kSynthTypes.size() + 1;
+#else
 static const int synthModelListImages[Synth::kSynthTypes.size()] = {
     enDisplayBitmaps::kBitmapMiniACD,  enDisplayBitmaps::kBitmapMiniFAT,
     enDisplayBitmaps::kBitmapMiniVAP,  enDisplayBitmaps::kBitmapMiniWTFM,
     enDisplayBitmaps::kBitmapMiniPERC, enDisplayBitmaps::kBitmapMiniDIRT,
     enDisplayBitmaps::kBitmapMiniCHIP
 };
+static constexpr uint8_t kSynthModelListLength = Synth::kSynthTypes.size();
+#endif
 
 static cInstrumentEditor* IE = &instrumentEditor;
+
+#ifdef PLATFORM_IMX
+// Routing screen rows: "<track name>: <dest>" (dest = Direct / Bus 1..3).
+static char busRoutingNamesBuf[kSampleTracks][32];
+static char* busRoutingNames[kSampleTracks] = {
+    busRoutingNamesBuf[0], busRoutingNamesBuf[1], busRoutingNamesBuf[2],
+    busRoutingNamesBuf[3], busRoutingNamesBuf[4], busRoutingNamesBuf[5],
+    busRoutingNamesBuf[6], busRoutingNamesBuf[7],
+};
+#endif
 
 static void functSynthActionButtons(uint8_t button);
 static void functSynthLoad();
 static void functSynthEditPatch();
+#ifdef PLATFORM_IMX
+static void functSynthOpenRouting();
+#endif
 
 static void functSynthListButton(uint8_t button, uint8_t state);
 static void functSynthConfirmLoad();
@@ -87,8 +115,27 @@ void cInstrumentEditor::setSynthParamsScreenFunct()
         ip->setButtonObj(i, buttonPress, functSynthActionButtons);
     }
 
+#ifdef PLATFORM_IMX
+    {
+        int syntPartIdx = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
+        const bool isBus = (syntPartIdx >= 0 && syntPartIdx < kSynthInstrumentsCount) &&
+                           mtProject.values.busSettings[syntPartIdx].isBus;
+        if (isBus)
+        {
+            // Bus slot: buttons 0-6 select params, button 7 opens the track routing screen.
+            ip->setButtonObj(interfaceButton6, buttonPress, functSynthActionButtons);
+            ip->setButtonObj(interfaceButton7, buttonPress, functSynthOpenRouting);
+        }
+        else
+        {
+            ip->setButtonObj(interfaceButton6, buttonPress, functSynthLoad);
+            ip->setButtonObj(interfaceButton7, buttonPress, functSynthEditPatch);
+        }
+    }
+#else
     ip->setButtonObj(interfaceButton6, buttonPress, functSynthLoad);
     ip->setButtonObj(interfaceButton7, buttonPress, functSynthEditPatch);
+#endif
 
     ip->setPotObj(interfacePot0, functSynthEncoder);
 
@@ -108,6 +155,16 @@ void cInstrumentEditor::setSynthParamsScreenFunct()
 void cInstrumentEditor::changeSynthParamValue(int value, ValueChangeSource source)
 {
     bool invert = source != kEncoder || interfaceGlobals.invertValForList;
+
+#ifdef PLATFORM_IMX
+    int syntPartIdx = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
+    if (syntPartIdx >= 0 && syntPartIdx < kSynthInstrumentsCount &&
+        mtProject.values.busSettings[syntPartIdx].isBus)
+    {
+        changeBusParamValue(value, source);
+        return;
+    }
+#endif
 
     switch (selectedPlace[mtInstEditModeSynth])
     {
@@ -178,6 +235,42 @@ static void functSynthDown()
 
 static void functSynthDelete()
 {
+#ifdef PLATFORM_IMX
+    {
+        int syntPartIdx = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
+        if (syntPartIdx >= 0 && syntPartIdx < kSynthInstrumentsCount &&
+            mtProject.values.busSettings[syntPartIdx].isBus)
+        {
+            strBusSettings& s = mtProject.values.busSettings[syntPartIdx];
+            switch (IE->selectedPlace[mtInstEditModeSynth])
+            {
+                case 1:
+                    s.limiterThreshold = 16384;
+                    engine.refreshBusRouting(syntPartIdx, s);
+                    break;
+                case 2: IE->setDefaultSynthGain(); break;
+                case 3: IE->setDefaultSynthPanning(); break;
+                case 4:
+                    s.limiterAttack = 100;
+                    engine.refreshBusRouting(syntPartIdx, s);
+                    break;
+                case 5:
+                    s.limiterRelease = 0.512f;
+                    engine.refreshBusRouting(syntPartIdx, s);
+                    break;
+                case 6:
+                    s.sidechainSrc = 0;
+                    engine.refreshBusRouting(syntPartIdx, s);
+                    break;
+                default: break;
+            }
+            IE->showSynthParamsScreen();
+            newFileManager.setProjectStructChanged();
+            return;
+        }
+    }
+#endif
+
     switch (IE->selectedPlace[mtInstEditModeSynth])
     {
         // case 0: IE->setDefaultSynthModel(); break;
@@ -391,11 +484,83 @@ static void functSynthEditPatch()
     IE->setSynthPatchEditorScreenFunct();
 }
 
+#ifdef PLATFORM_IMX
+static void functSynthOpenRouting()
+{
+    sequencer.stopManualNotes();
+    IE->mode = mtInstEditModeBusRouting;
+    IE->showBusRoutingScreen();
+    IE->setBusRoutingScreenFunct();
+}
+#endif
+
+#ifdef PLATFORM_IMX
+// On IMX the model list has a trailing "BUS" row; stored position: 0..kSynthTypes.size()-1 =
+// synth type, kSynthTypes.size() = BUS.
+static int busModelPosOf(int synthPartIdx)
+{
+    return mtProject.values.busSettings[synthPartIdx].isBus ? (int)Synth::kSynthTypes.size()
+                                                            : (int)mtProject.values.synthPart[synthPartIdx]
+                                                                   .synthType;
+}
+#endif
+
 void cInstrumentEditor::changeSynthModel(int16_t value)
 {
     int syntPartIdx = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
     assert(syntPartIdx >= 0 && syntPartIdx < kSynthInstrumentsCount);
 
+#ifdef PLATFORM_IMX
+    const int modelMaxValue = (int)Synth::kSynthTypes.size(); // last index = BUS
+    int pos = busModelPosOf(syntPartIdx);
+
+    if (IE->rollListOver && pos + value > modelMaxValue)
+    {
+        pos = 0;
+    }
+    else
+    {
+        pos = clamp<int>(pos + value, 0, modelMaxValue);
+    }
+
+    bool wasBus = mtProject.values.busSettings[syntPartIdx].isBus;
+    bool becameBus = pos >= (int)Synth::kSynthTypes.size();
+
+    if (wasBus == becameBus && (wasBus || mtProject.values.synthPart[syntPartIdx].synthType == pos))
+    {
+        return; // no effective change
+    }
+
+    if (becameBus)
+    {
+        mtProject.values.busSettings[syntPartIdx].isBus = 1;
+        mtProject.values.synthPart[syntPartIdx].voiceCount = 0;
+        synth->setVoiceCount(syntPartIdx, 0);
+        engine.refreshBusRouting(syntPartIdx, mtProject.values.busSettings[syntPartIdx]);
+    }
+    else
+    {
+        if (wasBus)
+        {
+            mtProject.values.busSettings[syntPartIdx].isBus = 0;
+            engine.refreshBusRouting(syntPartIdx, mtProject.values.busSettings[syntPartIdx]);
+            // A bus slot had 0 voices; give the restored synth a voice so it isn't silent.
+            if (mtProject.values.synthPart[syntPartIdx].voiceCount == 0)
+            {
+                mtProject.values.synthPart[syntPartIdx].voiceCount = 1;
+            }
+        }
+        mtProject.values.synthPart[syntPartIdx].synthType = pos;
+        synth->setInstrumentType(syntPartIdx, Synth::kSynthTypes.at(pos));
+        changeSynthPolyphony(0);
+        initCurrentPatch();
+    }
+
+    showSynthModel(syntPartIdx);
+    lightUpPadBoard();
+    newFileManager.setProjectStructChanged();
+    return;
+#else
     int modelMaxValue = (Synth::kSynthTypes.size() - 1);
 
     int32_t previousSynthType = mtProject.values.synthPart[syntPartIdx].synthType;
@@ -426,6 +591,7 @@ void cInstrumentEditor::changeSynthModel(int16_t value)
     initCurrentPatch();
     lightUpPadBoard();
     newFileManager.setProjectStructChanged();
+#endif
 }
 
 void cInstrumentEditor::changeSynthPolyphony(int16_t value)
@@ -604,6 +770,82 @@ void cInstrumentEditor::setDefaultSynthPanning()
     setSynthPanning(syntPartIdx, mtProject.values.synthPart[syntPartIdx].panning);
 }
 
+#ifdef PLATFORM_IMX
+void cInstrumentEditor::changeBusParamValue(int value, ValueChangeSource source)
+{
+    bool invert = source != kEncoder || interfaceGlobals.invertValForList;
+
+    // Place order matches the on-screen labels: 0=Model 1=Threshold 2=Gain 3=Panning
+    // 4=Attack 5=Release 6=Sidechain.
+    switch (selectedPlace[mtInstEditModeSynth])
+    {
+        case 0: changeSynthModel(invert ? -value : value); break;
+        case 1: changeBusThreshold(value); break;
+        case 2: changeSynthGain(value); break;
+        case 3: changeSynthPanning(value); break;
+        case 4: changeBusAttack(value); break;
+        case 5: changeBusRelease(value); break;
+        case 6: changeBusSidechain(invert ? -value : value); break;
+        default: break;
+    }
+}
+
+void cInstrumentEditor::changeBusThreshold(int16_t value)
+{
+    int bus = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
+    strBusSettings& s = mtProject.values.busSettings[bus];
+
+    int32_t val = (int32_t)value * LIMITER_THRESHOLD_MAX / 100;
+    val = clamp<int32_t>(val, MIN_SIGNED_16BIT, MAX_SIGNED_16BIT);
+
+    s.limiterThreshold =
+      clamp<uint16_t>(s.limiterThreshold + val, LIMITER_THRESHOLD_MIN, LIMITER_THRESHOLD_MAX);
+    engine.refreshBusRouting(bus, s);
+    newFileManager.setProjectStructChanged();
+    showSynthParamsScreen();
+}
+
+void cInstrumentEditor::changeBusAttack(int16_t value)
+{
+    int bus = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
+    strBusSettings& s = mtProject.values.busSettings[bus];
+
+    s.limiterAttack =
+      clamp<uint16_t>(s.limiterAttack + (int32_t)value * LIMITER_ATTACK_MAX / 1000,
+                      LIMITER_ATTACK_MIN,
+                      LIMITER_ATTACK_MAX);
+    engine.refreshBusRouting(bus, s);
+    newFileManager.setProjectStructChanged();
+    showSynthParamsScreen();
+}
+
+void cInstrumentEditor::changeBusRelease(int16_t value)
+{
+    int bus = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
+    strBusSettings& s = mtProject.values.busSettings[bus];
+
+    s.limiterRelease =
+      clamp<float>(s.limiterRelease + (float)value * LIMITER_RELEASE_MAX / 1000,
+                   LIMITER_RELEASE_MIN,
+                   LIMITER_RELEASE_MAX);
+    engine.refreshBusRouting(bus, s);
+    newFileManager.setProjectStructChanged();
+    showSynthParamsScreen();
+}
+
+void cInstrumentEditor::changeBusSidechain(int16_t value)
+{
+    int bus = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
+    strBusSettings& s = mtProject.values.busSettings[bus];
+
+    // 0 = off, 1..8 = sample track.
+    s.sidechainSrc = clamp<int>(s.sidechainSrc + value, 0, kSampleTracks);
+    engine.refreshBusRouting(bus, s);
+    newFileManager.setProjectStructChanged();
+    showSynthParamsScreen();
+}
+#endif
+
 void cInstrumentEditor::changeSynthPatchListPos(int16_t value)
 {
     patchListPosition =
@@ -778,6 +1020,97 @@ void cInstrumentEditor::showSynthParamsScreen()
     display.setControlColors(label[7], display.getTheme().activeButtonLabelsColors);
     display.setControlColors(modelListControl, display.getTheme().activeListColors);
 
+#ifdef PLATFORM_IMX
+    int syntPartIdx = mtProject.values.lastUsedInstrument - SYNTH_INSTRUMENTS_START_IDX;
+    assert(syntPartIdx >= 0 && syntPartIdx < kSynthInstrumentsCount);
+    const bool isBus = mtProject.values.busSettings[syntPartIdx].isBus;
+
+    if (isBus)
+    {
+        // Bus slot: a limiter fed by the sample tracks routed to it. Bar slots are fixed by the
+        // shared setup below (bar[3] is the only left/right bar), so Panning sits at slot 3 and
+        // Gain at slot 2 to reuse the existing shows.
+        display.setControlText(label[0], "Model");
+        display.setControlText(label[1], "Threshold");
+        display.setControlText(label[2], "Gain");
+        display.setControlText(label[3], "Panning");
+        display.setControlText(label[4], "Attack");
+        display.setControlText(label[5], "Release");
+        display.setControlText(label[6], "Sidechain");
+        display.setControlText(label[7], "Routing");
+
+        display.setControlText2(label[0], "");
+        display.setControlText2(label[1], "");
+        display.setControlText2(label[2], "");
+        display.setControlText2(label[3], "");
+        display.setControlText2(label[4], "");
+        display.setControlText2(label[5], "");
+        display.setControlText2(label[6], "");
+        display.setControlText2(label[7], "");
+
+        showBusThreshold(syntPartIdx);
+        showSynthGain(syntPartIdx);
+        showSynthPanning(syntPartIdx);
+        showBusAttack(syntPartIdx);
+        showBusRelease(syntPartIdx);
+        showBusSidechain(syntPartIdx);
+        showBusRoutingEntry(syntPartIdx);
+
+        display.setControlText(noteLabel, "Bus:");
+        display.setControlStyle(noteLabel, controlStyleShow | controlStyleCenterY | controlStyleFont4);
+        display.setControlStyle2(noteLabel, controlStyleShow | controlStyleCenterY | controlStyleFont2);
+        display.setControlColors(noteLabel, display.getTheme().activeButtonLabelsColors);
+        display.setControlValue(noteLabel, 1);
+        display.setControlPosition(noteLabel, 625, 45);
+        display.setControlSize(noteLabel, 170, 30);
+        display.setControlText2(noteLabel, "sample tracks");
+        display.refreshControl(noteLabel);
+    }
+    else
+    {
+        display.setControlText(label[0], "Model");
+        display.setControlText(label[1], "Polyphony");
+        display.setControlText(label[2], "Gain");
+        display.setControlText(label[3], "Panning");
+        display.setControlText(label[4], "Reverb send");
+        display.setControlText(label[5], "Delay send");
+        display.setControlText(label[6], "Load");
+        display.setControlText(label[7], "Edit");
+
+        display.setControlText2(label[0], "");
+        display.setControlText2(label[1], "");
+        display.setControlText2(label[2], "");
+        display.setControlText2(label[3], "");
+        display.setControlText2(label[4], "");
+        display.setControlText2(label[5], "");
+        display.setControlText2(label[6], "Patch");
+        display.setControlText2(label[7], "Patch");
+        display.setControlPosition(label[4], (800 / 8) * 4 + (800 / 16), -1);
+
+        showSynthPolyphony(syntPartIdx);
+        showSynthGain(syntPartIdx);
+        showSynthPanning(syntPartIdx);
+        showSynthReverbSend(syntPartIdx);
+        showSynthDelaySend(syntPartIdx);
+        showSynthPatchName(syntPartIdx);
+
+        display.setControlText(noteLabel, "Patch:");
+        display.setControlStyle(noteLabel, controlStyleShow | controlStyleCenterY | controlStyleFont4);
+        display.setControlStyle2(noteLabel, controlStyleShow | controlStyleCenterY | controlStyleFont2);
+        display.setControlColors(noteLabel, display.getTheme().activeButtonLabelsColors);
+        display.setControlValue(noteLabel, 1);
+        display.setControlPosition(noteLabel, 625, 45);
+        display.setControlSize(noteLabel, 170, 30);
+    }
+
+    modelListData.start = busModelPosOf(syntPartIdx);
+    modelListData.length = kSynthModelListLength;
+    modelListData.linesCount = std::min<uint16_t>(kSynthModelListLength, 7);
+    modelListData.rowHeight = 50;
+    modelListData.params = nullptr;
+    modelListData.imageIds = synthModelListImages;
+    modelListData.scrollText = true;
+#else
     display.setControlText(label[0], "Model");
     display.setControlText(label[1], "Polyphony");
     display.setControlText(label[2], "Gain");
@@ -822,6 +1155,7 @@ void cInstrumentEditor::showSynthParamsScreen()
     modelListData.params = nullptr;
     modelListData.imageIds = synthModelListImages;
     modelListData.scrollText = true;
+#endif
 
     display.setControlData(modelListControl, &modelListData);
     display.setControlPosition(modelListControl, (800 / 8) * 0 + 1, -1);
@@ -904,7 +1238,11 @@ void cInstrumentEditor::showSynthParamsScreen()
 
 void cInstrumentEditor::showSynthModel(uint8_t synthPart)
 {
+#ifdef PLATFORM_IMX
+    display.setControlValue(modelListControl, busModelPosOf(synthPart));
+#else
     display.setControlValue(modelListControl, mtProject.values.synthPart[synthPart].synthType);
+#endif
     display.refreshControl(modelListControl);
     titleBar->showCurrentInstrumentOnRightLabel();
 }
@@ -1065,6 +1403,221 @@ void cInstrumentEditor::showSynthPatchList()
     display.setControlValue(list2Control, patchListPosition);
     display.refreshControl(list2Control);
 }
+
+#ifdef PLATFORM_IMX
+// ------------------------------------------------------------------------------------------
+// ------------------------------        BUS      ---------------------------------------------
+// ------------------------------------------------------------------------------------------
+
+void cInstrumentEditor::showBusThreshold(uint8_t bus)
+{
+    uint16_t thr = mtProject.values.busSettings[bus].limiterThreshold;
+    uint8_t percentValue = (thr * 100) / LIMITER_THRESHOLD_MAX;
+    float thresholdInDb =
+      20 * log10f((float)limiterThresholdValues[percentValue] / (float)LIMITER_THRESHOLD_MAX);
+
+    snprintf(labelText[0], sizeof(labelText[0]), "%0.2f dB", thresholdInDb);
+    display.setControlText2(label[1], labelText[0]);
+    display.setControlValue(barControl[1], percentValue);
+    display.refreshControl(label[1]);
+    display.refreshControl(barControl[1]);
+}
+
+void cInstrumentEditor::showBusAttack(uint8_t bus)
+{
+    snprintf(labelText[4], sizeof(labelText[4]), "%.3fs",
+             (float)mtProject.values.busSettings[bus].limiterAttack / 1000.0f);
+
+    display.setControlText2(label[4], labelText[4]);
+    display.setControlValue(barControl[4],
+                            (mtProject.values.busSettings[bus].limiterAttack * 100) /
+                              LIMITER_ATTACK_MAX);
+    display.refreshControl(label[4]);
+    display.refreshControl(barControl[4]);
+}
+
+void cInstrumentEditor::showBusRelease(uint8_t bus)
+{
+    snprintf(labelText[5], sizeof(labelText[5]), "%.3fs",
+             mtProject.values.busSettings[bus].limiterRelease / 1000.0f);
+
+    display.setControlText2(label[5], labelText[5]);
+    display.setControlValue(barControl[5],
+                            (int)(mtProject.values.busSettings[bus].limiterRelease * 100 /
+                                  LIMITER_RELEASE_MAX));
+    display.refreshControl(label[5]);
+    display.refreshControl(barControl[5]);
+}
+
+void cInstrumentEditor::showBusSidechain(uint8_t bus)
+{
+    uint8_t src = mtProject.values.busSettings[bus].sidechainSrc;
+    if (src == 0)
+    {
+        display.setControlText2(label[6], "Off");
+    }
+    else
+    {
+        // 1..8 = sample track name.
+        char shortName[20];
+        snprintf(shortName, sizeof(shortName), "%.13s", &mtProject.values.TrackNames[src - 1][0]);
+        display.setControlText2(label[6], shortName);
+    }
+    display.refreshControl(label[6]);
+}
+
+void cInstrumentEditor::showBusRoutingEntry(uint8_t bus)
+{
+    int count = 0;
+    for (int track = 0; track < kSampleTracks; track++)
+    {
+        if (mtProject.values.trackRoute[track] == bus + 1)
+        {
+            count++;
+        }
+    }
+
+    snprintf(labelText[7], sizeof(labelText[7]), "%d tracks", count);
+    display.setControlText2(label[7], labelText[7]);
+    display.refreshControl(label[7]);
+}
+
+void cInstrumentEditor::showBusRoutingScreen()
+{
+    showTitleBar();
+
+    for (int track = 0; track < kSampleTracks; track++)
+    {
+        // route: 0 = direct, 1..3 = bus (1-indexed). A bus shows only while it is active,
+        // otherwise the track effectively goes direct.
+        uint8_t route = mtProject.values.trackRoute[track];
+        bool routedToBus =
+          route >= 1 && route <= kSynthParts && mtProject.values.busSettings[route - 1].isBus;
+
+        if (routedToBus)
+        {
+            snprintf(busRoutingNamesBuf[track], sizeof(busRoutingNamesBuf[track]),
+                     "%.13s: Bus %d", &mtProject.values.TrackNames[track][0], route);
+        }
+        else
+        {
+            snprintf(busRoutingNamesBuf[track], sizeof(busRoutingNamesBuf[track]),
+                     "%.13s: Direct", &mtProject.values.TrackNames[track][0]);
+        }
+    }
+
+    list1Data.lineWidthMax = 0;
+    list1Data.linesCount = 8;
+    list1Data.start = busRoutingTrackPos;
+    list1Data.length = kSampleTracks;
+    list1Data.data = busRoutingNames;
+    list1Data.lineTextLenMax = 0;
+    list1Data.selectionActive = 1;
+
+    display.setControlData(list1Control, &list1Data);
+    display.setControlPosition(list1Control, (800 / 8) * 2 + 1, -1);
+    display.setControlSize(list1Control, (800 / 8) * 4 - 3, -1);
+    display.setControlValue(list1Control, busRoutingTrackPos);
+    display.setControlShow(list1Control);
+    display.refreshControl(list1Control);
+
+    display.setControlColors(list1Control, display.getTheme().activeListColors);
+    display.setControlColors(label[0], display.getTheme().activeLabelsColors);
+
+    display.setControlText(label[0], "Track routing");
+    display.setControlText2(label[0], "encoder = track, up/down = destination");
+    display.setControlStyle2(label[0], controlStyleCenterX | controlStyleCenterY | controlStyleFont2);
+    display.setControlShow(label[0]);
+    display.refreshControl(label[0]);
+
+    for (uint8_t i = 1; i < 7; i++)
+    {
+        display.setControlHide(label[i]);
+        display.refreshControl(label[i]);
+        display.setControlHide(barControl[i]);
+        display.refreshControl(barControl[i]);
+    }
+
+    display.setControlText(label[7], "Back");
+    display.setControlText2(label[7], " ");
+    display.setControlColors(label[7], display.getTheme().activeButtonLabelsColors);
+    display.setControlShow(label[7]);
+    display.refreshControl(label[7]);
+    display.setControlHide(barControl[7]);
+    display.refreshControl(barControl[7]);
+
+    display.setControlHide(modelListControl);
+    display.setControlHide(noteLabel);
+    display.setControlHide(frameControl);
+    display.setControlHide(blankSpaceCover[0]);
+    display.setControlHide(list2Control);
+    display.setControlHide(list3Control);
+    display.setControlHide(list4Control);
+    display.setControlHide(paramsListControl);
+    display.setControlHide(imgGridControl);
+
+    display.setControlValue(bgLabel, 255);
+    display.refreshControl(bgLabel);
+
+    display.synchronizeRefresh();
+}
+
+static void functBusRoutingEncoder(int16_t value)
+{
+    IE->changeBusRoutingTrack(interfaceGlobals.invertValForList ? -value : value);
+}
+
+static void functBusRoutingUp()
+{
+    IE->changeBusRoutingDest(1);
+}
+
+static void functBusRoutingDown()
+{
+    IE->changeBusRoutingDest(-1);
+}
+
+static void functBusRoutingBack()
+{
+    IE->mode = mtInstEditModeSynth;
+    IE->showSynthParamsScreen();
+    IE->setSynthParamsScreenFunct();
+}
+
+void cInstrumentEditor::setBusRoutingScreenFunct()
+{
+    setBaseScreenFunct();
+
+    ip->clearButtonsRange(interfaceButton0, interfaceButton7);
+    ip->clearAllPots();
+    ip->setPadsGlobal(nullptr);
+
+    ip->setPotObj(interfacePot0, functBusRoutingEncoder);
+    ip->setButtonObj(interfaceButtonUp, buttonPress, functBusRoutingUp);
+    ip->setButtonObj(interfaceButtonDown, buttonPress, functBusRoutingDown);
+    ip->setButtonObj(interfaceButton7, buttonPress, functBusRoutingBack);
+}
+
+void cInstrumentEditor::changeBusRoutingTrack(int16_t value)
+{
+    busRoutingTrackPos = clamp<int>(busRoutingTrackPos + value, 0, kSampleTracks - 1);
+    display.setControlValue(list1Control, busRoutingTrackPos);
+    display.refreshControl(list1Control);
+}
+
+void cInstrumentEditor::changeBusRoutingDest(int16_t value)
+{
+    // cycle the selected track's destination: 0 = direct, 1..3 = bus (1-indexed).
+    int track = busRoutingTrackPos;
+    mtProject.values.trackRoute[track] =
+      clamp<int>(mtProject.values.trackRoute[track] + value, 0, kSynthParts);
+
+    engine.refreshAllBuses();
+    newFileManager.setProjectStructChanged();
+
+    showBusRoutingScreen();
+}
+#endif
 
 void cInstrumentEditor::showSynthPatchInitPopup()
 {
