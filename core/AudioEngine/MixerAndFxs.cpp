@@ -90,4 +90,25 @@ AudioAnalyzeRMS* MixerAndFxs<voicesCount>::getSynthRMS(int synthIdx, MixerAndFxC
 }
 #endif
 
+#ifdef PLATFORM_IMX
+template<int voicesCount>
+AudioMixer<MixerAndFxs<voicesCount>::kBusMixerInputs>*
+MixerAndFxs<voicesCount>::getBusMixer(int bus, MixerAndFxChannelType channel)
+{
+    return &busMixer[bus][(int)channel];
+}
+
+template<int voicesCount>
+AudioEffectLimiter* MixerAndFxs<voicesCount>::getBusLimiter(int bus, MixerAndFxChannelType channel)
+{
+    return &busLimiter[bus][(int)channel];
+}
+
+template<int voicesCount>
+AudioMux* MixerAndFxs<voicesCount>::getBusSidechainMux(int bus)
+{
+    return &busSidechainMux[bus];
+}
+#endif
+
 template class MixerAndFxs<8>;

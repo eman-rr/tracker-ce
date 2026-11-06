@@ -529,6 +529,11 @@ uint8_t cProjectEditor::loadProjectValues()
     }
 #endif
 
+#ifdef PLATFORM_IMX
+    // After the synth volume/pan params are set, so bus gain (which folds them) is correct.
+    engine.refreshAllBuses();
+#endif
+
     return 1;
 }
 

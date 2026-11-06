@@ -52,6 +52,12 @@ class MixerAndFxs
 #ifdef FEATURE_SYNTH
     AudioAnalyzeRMS* getSynthRMS(int synthIdx, MixerAndFxChannelType channel);
 #endif
+#ifdef PLATFORM_IMX
+    static constexpr int kBusMixerInputs = voicesCount;
+    AudioMixer<kBusMixerInputs>* getBusMixer(int bus, MixerAndFxChannelType channel);
+    AudioEffectLimiter* getBusLimiter(int bus, MixerAndFxChannelType channel);
+    AudioMux* getBusSidechainMux(int bus);
+#endif
 
   private:
     AudioMixer<kSendsInputsCount> preFxMixer[FxType::kFxCount];
@@ -69,6 +75,12 @@ class MixerAndFxs
 
     AudioEffectShortDelay shortDelay;
     AudioEffectPolyverb polyverb;
+
+#ifdef PLATFORM_IMX
+    AudioMixer<kBusMixerInputs> busMixer[kSynthParts][(int)MixerAndFxChannelType::kChannelCount];
+    AudioEffectLimiter busLimiter[kSynthParts][(int)MixerAndFxChannelType::kChannelCount];
+    AudioMux busSidechainMux[kSynthParts];
+#endif
 
     std::vector<AudioConnection*> connections;
 };

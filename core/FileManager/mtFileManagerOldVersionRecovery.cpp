@@ -26,6 +26,7 @@ static void recoveryProjectVersion13();
 static void recoveryProjectVersion14();
 static void recoveryProjectVersion15();
 static void recoveryProjectVersion16();
+static void recoveryProjectVersion17();
 static void recoveryInstrumentVersion1();
 static void recoveryInstrumentVersion2();
 static void recoveryInstrumentVersion3();
@@ -58,6 +59,7 @@ mtVersionRecovery::mtVersionRecovery()
     recoveryProjectFunction[13] = recoveryProjectVersion14;
     recoveryProjectFunction[14] = recoveryProjectVersion15;
     recoveryProjectFunction[15] = recoveryProjectVersion16;
+    recoveryProjectFunction[16] = recoveryProjectVersion17;
 
     // INSTRUMENT
     recoveryInstrumentFunction[0] = recoveryInstrumentVersion1;
@@ -340,8 +342,13 @@ static void recoveryProjectVersion14()
     projectNameShift += 3 * sizeof(uint8_t);
 }
 
-static_assert(sizeof(strMtProjectRemote) ==
-              2304); // if assert hits it is most likely you need to do sth here
+#ifdef PLATFORM_IMX
+// v18 appends busSettings[3] + trackRoute[8] (IMX only) to strMtValues. The exact total depends
+// on padding, so if this fires, set the number to sizeof(strMtProjectRemote) the compiler reports.
+static_assert(sizeof(strMtProjectRemote) == 2352);
+#else
+static_assert(sizeof(strMtProjectRemote) == 2304);
+#endif
 static void recoveryProjectVersion15()
 {
     strMtProjectRemote* newProject = versionRecovery.getReadedProject();
@@ -377,6 +384,33 @@ void recoveryProjectVersion16()
 {
     strMtProjectRemote* receivedProject = versionRecovery.getReadedProject();
     receivedProject->values.recorderGainUsb = 0;
+}
+
+// v17 -> v18: busSettings[kSynthInstrumentsCount] appended to the end of strMtValues (IMX only).
+// Old files hold every byte before it unchanged, but it shifts projectName by its own size, so
+// relocate projectName from the old offset (same technique as v15). Default the new bus fields.
+void recoveryProjectVersion17()
+{
+    strMtProjectRemote* newProject = versionRecovery.getReadedProject();
+    strMtProjectRemote oldProject;
+    memcpy(&oldProject, newProject, sizeof(oldProject));
+
+#ifdef PLATFORM_IMX
+    memset(&newProject->values.busSettings, 0, sizeof(newProject->values.busSettings));
+    memset(newProject->values.trackRoute, 0, sizeof(newProject->values.trackRoute));
+    for (int part = 0; part < kSynthInstrumentsCount; part++)
+    {
+        // isBus/sidechainSrc stay 0; limiter defaults to neutral (full-scale threshold).
+        newProject->values.busSettings[part].limiterAttack = 100;
+        newProject->values.busSettings[part].limiterRelease = 0.512f;
+        newProject->values.busSettings[part].limiterThreshold = 16384;
+    }
+    // Bytes appended before projectName (busSettings + trackRoute + any padding) = the compiled
+    // distance from the first new field to projectName.
+    projectNameShift +=
+      (char*)&newProject->projectName - (char*)&newProject->values.busSettings;
+    strcpy(newProject->projectName, oldProject.projectName - projectNameShift);
+#endif
 }
 
 //*************************************************************************INSTRUMENT

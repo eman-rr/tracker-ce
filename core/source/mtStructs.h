@@ -40,7 +40,7 @@ const uint8_t PRODUCT_BETA = FW_VER_BETA;
 const char firmwareVersionLabelFormat[] = "%d.%d.%d " FW_EDITION_NAME;
 const char firmwareVersionLabelFormatBeta[] = "%d.%d.%d " FW_EDITION_NAME " beta %d";
 
-const uint8_t PROJECT_FILE_VERSION = 17;   // wersja struktury pliku projektu
+const uint8_t PROJECT_FILE_VERSION = 18;   // wersja struktury pliku projektu
 const uint8_t INSTRUMENT_FILE_VERSION = 9; // wersja struktury pliku instrumentu
 const uint8_t PATTERN_FILE_VERSION = 6;
 
@@ -839,6 +839,17 @@ typedef struct
 
 } SynthPartSettings;
 
+// Bus (IMX). Per-slot bus state. A synth slot can host a bus that sums sample tracks.
+typedef struct
+{
+    uint8_t isBus = 0;          // 1 = this slot is a bus (sample tracks only)
+    uint8_t sidechainSrc = 0;   // 0 = off, 1..8 = sample track (1-indexed)
+    uint16_t limiterAttack = 100;
+    float limiterRelease = 0.512f;
+    uint16_t limiterThreshold = 16384;
+
+} strBusSettings;
+
 //----------------------------------------------------------------------------------
 struct strMtValues
 {
@@ -966,6 +977,12 @@ struct strMtValues
     SynthPartSettings synthPart[kSynthInstrumentsCount];
 
     uint8_t recorderGainUsb;
+#ifdef PLATFORM_IMX
+    // Appended at the end (v18) so old projects keep their layout; only projectName shifts.
+    strBusSettings busSettings[kSynthInstrumentsCount];
+    // Global track routing (one destination per track): 0 = direct, 1..kSynthParts = bus.
+    uint8_t trackRoute[kSampleTracks] = { 0 };
+#endif
     void setDefaultTrackName(int trackIdx);
 };
 

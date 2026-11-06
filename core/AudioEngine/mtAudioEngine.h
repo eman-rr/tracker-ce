@@ -133,6 +133,11 @@ class audioEngine
     void seqSynthFx(uint8_t fx_id, uint8_t fx_val, uint8_t fx_n, uint8_t synthIdx);
     void refreshSynthInstrumentParams(SynthPartSettings& synthSettings, int synthIdx);
     float getSynthVoiceRMS(uint8_t channel, int synthIdx);
+#ifdef PLATFORM_IMX
+    void refreshBusRouting(int bus, const strBusSettings& settings);
+    void refreshAllBuses();
+    bool isBusSlot(int bus);
+#endif
 #endif
     void muteTrack(uint8_t channel, uint8_t state);
     void soloTrack(uint8_t channel, uint8_t state);
@@ -205,6 +210,9 @@ class audioEngine
     void setSynthReverbSend(int synthIdx, float value);
     void setSynthPanning(int synthIdx, float value);
     void setSynthGain(int synthIdx, float value);
+#ifdef PLATFORM_IMX
+    void applySlotOutGain(int synthIdx);
+#endif
     void setSynthMacro(int synthIdx, int macroIdx, float value);
     void endSynthFx(uint8_t fx_id, uint8_t fx_n, uint8_t synthIdx);
 #endif
@@ -239,8 +247,14 @@ class audioEngine
 
 #ifdef FEATURE_SYNTH
     SynthVoice synthVoice;
+    AudioConnection* synthToPanConns[kSynthParts][2];
+#ifdef PLATFORM_IMX
+    AudioConnection* trackDirectConns[kVoices][2];
+    AudioConnection* busToPanConns[kSynthParts][2];
+    AudioConnection* busTrackRouteConns[kSynthParts][kVoices][2];
+#endif
     std::optional<float> synthParams[kSynthParts][SynthParam::kSynthParamsCount]
-                                    [SynthValuesSource::kSynthValuesSourceCount] = {};
+                                     [SynthValuesSource::kSynthValuesSourceCount] = {};
     std::bitset<SynthParam::kSynthParamsCount>
       isSynthParamDirty[kSynthParts]; // this solution is not optimized (bits alignment) - please
                                       // use something like bitset2d from Play if it grows

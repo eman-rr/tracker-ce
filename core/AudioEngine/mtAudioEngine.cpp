@@ -357,16 +357,32 @@ void audioEngine::connectVoiceToMixer(AudioVoice* voice, MixerAndFxs<kVoices>* m
 void audioEngine::connectVoiceToMixer(AudioVoice* voice, MixerAndFxs<kVoices>* mixerAndFxs, int idx)
 {
     constexpr int kInputsChannels = 2;
-    connections.push_back(
-      new AudioConnection(voice->getPanningAmplifier(AudioVoice::VoiceChannels::kLeft),
-                          0,
-                          mixerAndFxs->getTracksMixer(MixerAndFxChannelType::kLeft),
-                          idx));
-    connections.push_back(
-      new AudioConnection(voice->getPanningAmplifier(AudioVoice::VoiceChannels::kRight),
-                          0,
-                          mixerAndFxs->getTracksMixer(MixerAndFxChannelType::kRight),
-                          idx));
+    trackDirectConns[idx][0] = new AudioConnection(
+      voice->getPanningAmplifier(AudioVoice::VoiceChannels::kLeft),
+      0,
+      mixerAndFxs->getTracksMixer(MixerAndFxChannelType::kLeft),
+      idx);
+    connections.push_back(trackDirectConns[idx][0]);
+    trackDirectConns[idx][1] = new AudioConnection(
+      voice->getPanningAmplifier(AudioVoice::VoiceChannels::kRight),
+      0,
+      mixerAndFxs->getTracksMixer(MixerAndFxChannelType::kRight),
+      idx);
+    connections.push_back(trackDirectConns[idx][1]);
+
+    for (int bus = 0; bus < kSynthParts; bus++)
+    {
+        busTrackRouteConns[bus][idx][0] = new AudioConnection(
+          voice->getPanningAmplifier(AudioVoice::VoiceChannels::kLeft),
+          0,
+          mixerAndFxs->getBusMixer(bus, MixerAndFxChannelType::kLeft),
+          idx);
+        busTrackRouteConns[bus][idx][1] = new AudioConnection(
+          voice->getPanningAmplifier(AudioVoice::VoiceChannels::kRight),
+          0,
+          mixerAndFxs->getBusMixer(bus, MixerAndFxChannelType::kRight),
+          idx);
+    }
 
     connections.push_back(
       new AudioConnection(voice->getFilter(AudioVoice::VoiceChannels::kLeft),
@@ -592,17 +608,32 @@ void audioEngine::connectSynthToMixer(MixerAndFxs<kVoices>* mixerAndFxs, SynthVo
                               kFirstSynthMixerChannel + synthChannel));
 
         // synth to panningAmplifier
-        connections.push_back(new AudioConnection(
+        synthToPanConns[synthChannel][0] = new AudioConnection(
           synth->getPolySynth(),
           SynthVoice::kPostFaderLeftChannelOffset + synthChannel,
           synth->getPanningAmplifier(synthChannel, SynthVoice::Channels::kLeft), //
-          0));
+          0);
+        connections.push_back(synthToPanConns[synthChannel][0]);
 
-        connections.push_back(new AudioConnection(
+        synthToPanConns[synthChannel][1] = new AudioConnection(
           synth->getPolySynth(),
           SynthVoice::kPostFaderRightChannelOffset + synthChannel,
           synth->getPanningAmplifier(synthChannel, SynthVoice::Channels::kRight),
-          0));
+          0);
+        connections.push_back(synthToPanConns[synthChannel][1]);
+
+#ifdef PLATFORM_IMX
+        busToPanConns[synthChannel][0] = new AudioConnection(
+          mixerAndFxs->getBusLimiter(synthChannel, MixerAndFxChannelType::kLeft),
+          0,
+          synth->getPanningAmplifier(synthChannel, SynthVoice::Channels::kLeft),
+          0);
+        busToPanConns[synthChannel][1] = new AudioConnection(
+          mixerAndFxs->getBusLimiter(synthChannel, MixerAndFxChannelType::kRight),
+          0,
+          synth->getPanningAmplifier(synthChannel, SynthVoice::Channels::kRight),
+          0);
+#endif
 
         // synth panningAmplifier to master mixer
         connections.push_back(new AudioConnection(
@@ -628,6 +659,30 @@ void audioEngine::connectSynthToMixer(MixerAndFxs<kVoices>* mixerAndFxs, SynthVo
                               mixerAndFxs->getSynthRMS(synthChannel, MixerAndFxChannelType::kRight),
                               0));
     }
+
+#ifdef PLATFORM_IMX
+    for (int bus = 0; bus < kSynthParts; bus++)
+    {
+        // Track amps feed the bus sidechain mux permanently; the mux only forwards while the bus
+        // is active, so an empty bus stays silent.
+        for (int track = 0; track < kVoices; track++)
+        {
+            connections.push_back(new AudioConnection(
+              instrumentPlayer[track].getAudioVoice()->getAmplifier(AudioVoice::VoiceChannels::kLeft),
+              0,
+              mixerAndFxs->getBusSidechainMux(bus),
+              track));
+        }
+        for (int channel = 0; channel < (int)MixerAndFxChannelType::kChannelCount; channel++)
+        {
+            connections.push_back(new AudioConnection(mixerAndFxs->getBusSidechainMux(bus),
+                                                      0,
+                                                      mixerAndFxs->getBusLimiter(bus,
+                                                                                  (MixerAndFxChannelType)channel),
+                                                      1));
+        }
+    }
+#endif
 }
 
 void audioEngine::connectSynthToExportQueue(SynthVoice* synth, ExportQueues* exportQueues)
@@ -1206,6 +1261,89 @@ float audioEngine::getSynthVoiceRMS(uint8_t channel, int synthIdx)
     return localVal;
 }
 
+#ifdef PLATFORM_IMX
+bool audioEngine::isBusSlot(int bus)
+{
+    return bus >= 0 && bus < kSynthParts && mtProject.values.busSettings[bus].isBus;
+}
+
+void audioEngine::refreshBusRouting(int bus, const strBusSettings& settings)
+{
+    if (bus < 0 || bus >= kSynthParts)
+        return;
+
+    const bool isBus = settings.isBus;
+
+    // Configure the limiter before any audio is routed to it (avoids a threshold=0 transient).
+    // sidechainSrc: 0 = off, 1..8 = track (1-indexed); mux input = track (0-indexed).
+    const bool sidechainOn = isBus && settings.sidechainSrc != 0;
+    for (int channel = 0; channel < (int)MixerAndFxChannelType::kChannelCount; channel++)
+    {
+        AudioEffectLimiter* limiter = mixerAndFxs.getBusLimiter(bus, (MixerAndFxChannelType)channel);
+        limiter->setThreshold(settings.limiterThreshold);
+        // attack/release curves use the master limiter mode (v1: no per-bus mode).
+        limiter->setAttack(settings.limiterAttack);
+        limiter->setRelease(settings.limiterRelease);
+        limiter->setSidechainEnable(sidechainOn);
+        limiter->unblockUpdate();
+    }
+    mixerAndFxs.getBusSidechainMux(bus)->setOut(sidechainOn ? settings.sidechainSrc - 1 : 0);
+
+    // A bus and a poly-synth share the slot's panning amp input; only one may feed it.
+    for (int ch = 0; ch < 2; ch++)
+    {
+        if (isBus)
+        {
+            synthToPanConns[bus][ch]->disconnect();
+            busToPanConns[bus][ch]->connect();
+        }
+        else
+        {
+            busToPanConns[bus][ch]->disconnect();
+            synthToPanConns[bus][ch]->connect();
+        }
+    }
+
+    applySlotOutGain(bus);
+}
+
+void audioEngine::refreshAllBuses()
+{
+    // Per-bus slot config first (limiter/mux/panning).
+    for (int bus = 0; bus < kSynthParts; bus++)
+    {
+        refreshBusRouting(bus, mtProject.values.busSettings[bus]);
+    }
+
+    // Track routing is a global decision (each track feeds exactly one destination: direct or a
+    // single bus), so it is computed once here.
+    for (int track = 0; track < kVoices; track++)
+    {
+        // trackRoute: 0 = direct, 1..kSynthParts = bus (1-indexed). Only honoured if that bus is
+        // active; otherwise the track stays direct.
+        const uint8_t route = mtProject.values.trackRoute[track];
+        const int bus = (route != 0 && route <= kSynthParts &&
+                         mtProject.values.busSettings[route - 1].isBus)
+                          ? route - 1
+                          : -1;
+        for (int ch = 0; ch < 2; ch++)
+        {
+            if (bus >= 0)
+            {
+                trackDirectConns[track][ch]->disconnect();
+                busTrackRouteConns[bus][track][ch]->connect();
+            }
+            else
+            {
+                for (int b = 0; b < kSynthParts; b++)
+                    busTrackRouteConns[b][track][ch]->disconnect();
+                trackDirectConns[track][ch]->connect();
+            }
+        }
+    }
+}
+#endif
+
 void audioEngine::setSynthParam(SynthParam param,
                                 int synthIdx,
                                 float value,
@@ -1283,18 +1421,45 @@ AUDIO_CORE_RAM void audioEngine::setSynthReverbSend(int synthIdx, float value)
     mixerAndFxs.getPreFxMixer(MixerAndFxs<kVoices>::FxType::kReverb)->gain(mixerInputIdx, gain);
 }
 
+#ifdef PLATFORM_IMX
+AUDIO_CORE_RAM void audioEngine::applySlotOutGain(int synthIdx)
+{
+    const float volume = calculateParamValue(synthIdx, SynthParam::kVolume);
+    const float pan = calculateParamValue(synthIdx, SynthParam::kPanning);
+    float gainL = mapClamped<float>(pan, 0.0f, 100.0f, 1.0f, 0.0f);
+    float gainR = mapClamped<float>(pan, -100.0f, 0.0f, 0.0f, 1.0f);
+    if (isBusSlot(synthIdx))
+    {
+        // A bus slot silences the poly-synth, so the slot gain (normally applied inside it) is
+        // folded into the shared slot output amp instead.
+        gainL *= polysynth::sdk::dbToAmplitude(volume);
+        gainR *= polysynth::sdk::dbToAmplitude(volume);
+    }
+    synthVoice.getPanningAmplifier(synthIdx, SynthVoice::Channels::kLeft)->gain(gainL);
+    synthVoice.getPanningAmplifier(synthIdx, SynthVoice::Channels::kRight)->gain(gainR);
+}
+#endif
+
 AUDIO_CORE_RAM void audioEngine::setSynthPanning(int synthIdx, float value)
 {
+#ifdef PLATFORM_IMX
+    applySlotOutGain(synthIdx);
+#else
     float gainR = mapClamped<float>(value, -100.0f, 0.0f, 0.0f, 1.0f);
     float gainL = mapClamped<float>(value, 0.0f, 100.0f, 1.0f, 0.0f);
 
     synthVoice.getPanningAmplifier(synthIdx, SynthVoice::Channels::kLeft)->gain(gainL);
     synthVoice.getPanningAmplifier(synthIdx, SynthVoice::Channels::kRight)->gain(gainR);
+#endif
 }
 
 AUDIO_CORE_RAM void audioEngine::setSynthGain(int synthIdx, float value)
 {
     synthVoice.getPolySynth()->setGain(synthIdx, value);
+#ifdef PLATFORM_IMX
+    if (isBusSlot(synthIdx))
+        applySlotOutGain(synthIdx);
+#endif
     if (mtProject.values.sendsMode == sendsModePostFader)
     {
         refreshSynthParam(SynthParam::kReverbSend);
