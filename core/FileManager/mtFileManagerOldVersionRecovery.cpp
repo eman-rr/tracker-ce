@@ -345,7 +345,7 @@ static void recoveryProjectVersion14()
 #ifdef PLATFORM_IMX
 // v18 appends busSettings[3] + trackRoute[8] (IMX only) to strMtValues. The exact total depends
 // on padding, so if this fires, set the number to sizeof(strMtProjectRemote) the compiler reports.
-static_assert(sizeof(strMtProjectRemote) == 2352);
+static_assert(sizeof(strMtProjectRemote) == 2348);
 #else
 static_assert(sizeof(strMtProjectRemote) == 2304);
 #endif
